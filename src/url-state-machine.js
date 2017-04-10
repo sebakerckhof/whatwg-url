@@ -282,7 +282,7 @@ function parseIPv6(input) {
       let numbersSeen = 0;
 
       while (input[pointer] !== undefined) {
-        let value = null;
+        let ipv4Piece = null;
 
         if (numbersSeen > 0) {
           if (input[pointer] === p(".") && numbersSeen < 4) {
@@ -298,20 +298,20 @@ function parseIPv6(input) {
 
         while (isASCIIDigit(input[pointer])) {
           const number = parseInt(at(input, pointer));
-          if (value === null) {
-            value = number;
-          } else if (value === 0) {
+          if (ipv4Piece === null) {
+            ipv4Piece = number;
+          } else if (ipv4Piece === 0) {
             return failure;
           } else {
-            value = value * 10 + number;
+            ipv4Piece = ipv4Piece * 10 + number;
           }
           ++pointer;
-          if (value > 255) {
+          if (ipv4Piece > 255) {
             return failure;
           }
         }
 
-        ip[piecePtr] = ip[piecePtr] * 0x100 + value;
+        ip[piecePtr] = ip[piecePtr] * 0x100 + ipv4Piece;
 
         ++numbersSeen;
 

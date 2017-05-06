@@ -93,6 +93,20 @@ function percentEncode(c) {
   return "%" + hex;
 }
 
+function percentDecode(input) {
+  const output = Buffer.alloc(input.length);
+  let ptr = 0;
+  for (let i = 0; i < input.length; ++i) {
+    if (input[i] !== p("%") || !isASCIIHex(input[i + 1]) || !isASCIIHex(input[i + 2])) {
+      output[ptr++] = input[i];
+    } else {
+      output[ptr++] = parseInt(input.slice(i + 1, i + 3).toString(), 16);
+      i += 2;
+    }
+  }
+  return output.slice(0, ptr);
+}
+
 function utf8PercentEncode(c) {
   const buf = new Buffer(c);
 
@@ -103,22 +117,6 @@ function utf8PercentEncode(c) {
   }
 
   return str;
-}
-
-function utf8PercentDecode(str) {
-  const input = new Buffer(str);
-  const output = [];
-  for (let i = 0; i < input.length; ++i) {
-    if (input[i] !== p("%")) {
-      output.push(input[i]);
-    } else if (input[i] === p("%") && isASCIIHex(input[i + 1]) && isASCIIHex(input[i + 2])) {
-      output.push(parseInt(input.slice(i + 1, i + 3).toString(), 16));
-      i += 2;
-    } else {
-      output.push(input[i]);
-    }
-  }
-  return new Buffer(output).toString();
 }
 
 function isC0ControlPercentEncode(c) {
@@ -403,7 +401,7 @@ function parseHost(input, isSpecialArg) {
     return parseOpaqueHost(input);
   }
 
-  const domain = utf8PercentDecode(input);
+  const domain = percentDecode(Buffer.from(input)).toString();
   const asciiDomain = tr46.toASCII(domain, false, tr46.PROCESSING_OPTIONS.NONTRANSITIONAL, false);
   if (asciiDomain === null) {
     return failure;
@@ -1227,6 +1225,106 @@ function serializeOrigin(tuple) {
   return result;
 }
 
+function strictlySplitByteSequence(buf, cp) {
+  const list = [];
+  let last = 0;
+  let i = buf.indexOf(cp);
+  while (i >= 0) {
+    list.push(buf.slice(last, i));
+    last = i + 1;
+    i = buf.indexOf(cp, last);
+  }
+  if (last !== buf.length) {
+    list.push(buf.slice(last));
+  }
+  return list;
+}
+
+function replaceByteInByteSequence(buf, from, to) {
+  let i = buf.indexOf(from);
+  while (i >= 0) {
+    buf[i] = to;
+    i = buf.indexOf(from, i + 1);
+  }
+  return buf;
+}
+
+function parseUrlencoded(input) {
+  const sequences = strictlySplitByteSequence(input, p("&"));
+  const output = [];
+  for (const bytes of sequences) {
+    if (bytes.length === 0) {
+      continue;
+    }
+
+    let name;
+    let value;
+    const indexOfEqual = bytes.indexOf(p("="));
+
+    if (indexOfEqual >= 0) {
+      name = bytes.slice(0, indexOfEqual);
+      value = bytes.slice(indexOfEqual + 1);
+    } else {
+      name = bytes;
+      value = Buffer.alloc(0);
+    }
+
+    name = replaceByteInByteSequence(Buffer.from(name), p("+"), p(" "));
+    value = replaceByteInByteSequence(Buffer.from(value), p("+"), p(" "));
+
+    output.push([percentDecode(name).toString(), percentDecode(value).toString()]);
+  }
+  return output;
+}
+
+function serializeUrlencodedByte(input) {
+  let output = "";
+  for (const byte of input) {
+    if (byte === p(" ")) {
+      output += "+";
+    } else if (byte === p("*") ||
+               byte === p("-") ||
+               byte === p(".") ||
+               byte >= p("0") && byte <= p("9") ||
+               byte >= p("A") && byte <= p("Z") ||
+               byte === p("_") ||
+               byte >= p("a") && byte <= p("z")) {
+      output += String.fromCodePoint(byte);
+    } else {
+      output += percentEncode(byte);
+    }
+  }
+  return output;
+}
+
+function serializeUrlencoded(tuples, encodingOverride = undefined) {
+  let encoding = "utf-8";
+  if (encodingOverride !== undefined) {
+    encoding = encodingOverride;
+  }
+
+  let output = "";
+  for (const [i, tuple] of tuples.entries()) {
+    // TODO: handle encoding override
+    const name = serializeUrlencodedByte(Buffer.from(tuple[0]));
+    let value = tuple[1];
+    if (tuple.length > 2 && tuple[2] !== undefined) {
+      if (tuple[2] === "hidden" && name === "_charset_") {
+        value = encoding;
+      } else if (tuple[2] === "file") {
+        // value is a File object
+        value = value.name;
+      }
+    }
+    value = serializeUrlencodedByte(Buffer.from(value));
+    if (i !== 0) {
+      output += "&";
+    }
+    output += `${name}=${value}`;
+  }
+  return output;
+}
+
 module.exports.serializeURL = serializeURL;
 
 module.exports.serializeURLToUnicodeOrigin = function (url) {
@@ -1302,4 +1400,10 @@ module.exports.parseURL = function (input, options) {
 
   // We don't handle blobs, so this just delegates:
   return module.exports.basicURLParse(input, { baseURL: options.baseURL, encodingOverride: options.encodingOverride });
+};
+
+module.exports.serializeUrlencoded = serializeUrlencoded;
+
+module.exports.parseUrlencodedString = function (input) {
+  return parseUrlencoded(Buffer.from(input));
 };
